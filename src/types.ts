@@ -8,6 +8,10 @@ export interface UploadedFile {
   data: string; // base64
 }
 
+export interface KnowledgeDocument extends UploadedFile {
+  createdAt: Date;
+}
+
 export interface Message {
   id: string;
   role: "user" | "model";
@@ -22,4 +26,6 @@ export interface ChatSession {
   title: string;
   messages: Message[];
   updatedAt: Date;
+  linkedKnowledgeIds?: string[];
 }
+

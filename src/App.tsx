@@ -3,7 +3,9 @@ import localforage from "localforage";
 import { Sidebar } from "./components/Sidebar";
 import { ChatArea } from "./components/ChatArea";
 import { MessageInput } from "./components/MessageInput";
-import { ChatSession, Message, UploadedFile } from "./types";
+import { KnowledgeBase } from "./components/KnowledgeBase";
+import { ChatHeader } from "./components/ChatHeader";
+import { ChatSession, Message, UploadedFile, KnowledgeDocument } from "./types";
 import { generateChatResponseStream } from "./services/geminiService";
 import { Content } from "@google/genai";
 
@@ -12,6 +14,8 @@ export default function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [knowledgeDocs, setKnowledgeDocs] = useState<KnowledgeDocument[]>([]);
+  const [currentView, setCurrentView] = useState<'chat' | 'knowledge'>('chat');
 
   const handleNewSession = React.useCallback(() => {
     const newSession: ChatSession = {
@@ -24,9 +28,9 @@ export default function App() {
     setCurrentSessionId(newSession.id);
   }, []);
 
-  // Load sessions from localforage on mount
+  // Load sessions and knowledge docs from localforage on mount
   useEffect(() => {
-    async function loadSessions() {
+    async function loadData() {
       try {
         const savedSessions = await localforage.getItem<ChatSession[]>("garfield_sessions");
         if (savedSessions && savedSessions.length > 0) {
@@ -35,14 +39,19 @@ export default function App() {
         } else {
           handleNewSession();
         }
+
+        const savedDocs = await localforage.getItem<KnowledgeDocument[]>("garfield_knowledge");
+        if (savedDocs) {
+          setKnowledgeDocs(savedDocs);
+        }
       } catch (e) {
-        console.error("Failed to load sessions", e);
+        console.error("Failed to load data", e);
         handleNewSession();
       } finally {
         setIsLoaded(true);
       }
     }
-    loadSessions();
+    loadData();
   }, [handleNewSession]);
 
   // Save sessions to localforage whenever they change
@@ -54,6 +63,15 @@ export default function App() {
     }
   }, [sessions, isLoaded]);
 
+  // Save knowledge docs to localforage whenever they change
+  useEffect(() => {
+    if (isLoaded) {
+      localforage.setItem("garfield_knowledge", knowledgeDocs).catch(e => {
+        console.error("Failed to save knowledge docs", e);
+      });
+    }
+  }, [knowledgeDocs, isLoaded]);
+
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
   const handleDeleteSession = (id: string) => {
@@ -61,6 +79,13 @@ export default function App() {
     if (currentSessionId === id) {
       setCurrentSessionId(sessions.length > 1 ? sessions.find(s => s.id !== id)?.id || null : null);
     }
+  };
+
+  const handleUpdateLinkedDocs = (docIds: string[]) => {
+    if (!currentSessionId) return;
+    setSessions(prev => prev.map(s => 
+      s.id === currentSessionId ? { ...s, linkedKnowledgeIds: docIds } : s
+    ));
   };
 
   const handleSendMessage = async (text: string, files: UploadedFile[]) => {
@@ -132,10 +157,13 @@ export default function App() {
         };
       }) || [];
 
+      const linkedDocs = knowledgeDocs.filter(doc => currentSession?.linkedKnowledgeIds?.includes(doc.id));
+
       const stream = generateChatResponseStream(
         history,
         text,
-        files.map((f) => ({ data: f.data, mimeType: f.type }))
+        files.map((f) => ({ data: f.data, mimeType: f.type })),
+        linkedDocs.map(doc => ({ data: doc.data, mimeType: doc.type, name: doc.name }))
       );
 
       let fullText = "";
@@ -212,21 +240,47 @@ export default function App() {
       <Sidebar
         sessions={sessions}
         currentSessionId={currentSessionId}
+        currentView={currentView}
         onSelectSession={setCurrentSessionId}
         onNewSession={handleNewSession}
         onDeleteSession={handleDeleteSession}
+        onViewChange={setCurrentView}
       />
       <main className="flex-1 flex flex-col h-full relative">
-        <ChatArea
-          messages={currentSession?.messages || []}
-          isStreaming={isStreaming}
-        />
-        <div className="bg-gradient-to-t from-zinc-50 via-zinc-50 to-transparent dark:from-zinc-950 dark:via-zinc-950 pt-6 pb-4 px-4">
-          <MessageInput
-            onSendMessage={handleSendMessage}
-            isStreaming={isStreaming}
+        {currentView === 'knowledge' ? (
+          <KnowledgeBase 
+            documents={knowledgeDocs}
+            onAddDocuments={(docs) => setKnowledgeDocs(prev => [...docs, ...prev])}
+            onDeleteDocument={(id) => {
+              setKnowledgeDocs(prev => prev.filter(d => d.id !== id));
+              // Also remove from linked sessions
+              setSessions(prev => prev.map(s => ({
+                ...s,
+                linkedKnowledgeIds: s.linkedKnowledgeIds?.filter(linkedId => linkedId !== id)
+              })));
+            }}
           />
-        </div>
+        ) : (
+          <>
+            {currentSession && (
+              <ChatHeader 
+                session={currentSession}
+                knowledgeDocs={knowledgeDocs}
+                onUpdateLinkedDocs={handleUpdateLinkedDocs}
+              />
+            )}
+            <ChatArea
+              messages={currentSession?.messages || []}
+              isStreaming={isStreaming}
+            />
+            <div className="bg-gradient-to-t from-zinc-50 via-zinc-50 to-transparent dark:from-zinc-950 dark:via-zinc-950 pt-6 pb-4 px-4">
+              <MessageInput
+                onSendMessage={handleSendMessage}
+                isStreaming={isStreaming}
+              />
+            </div>
+          </>
+        )}
       </main>
     </div>
   );
